@@ -2,7 +2,10 @@
 builder = "dockerfile"
 
 [deploy]
-healthcheckPath = "/setup/healthz"
+# /openclaw is the gateway's native Control UI; serves 200/302 once
+# the daemon is up. Replaces the wrapper's /setup/healthz which no
+# longer exists now that we bypass the wrapper.
+healthcheckPath = "/openclaw"
 healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 

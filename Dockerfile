@@ -86,4 +86,10 @@ EXPOSE 8080
 
 # Ensure PID 1 reaps zombies and forwards signals.
 ENTRYPOINT ["tini", "--"]
-CMD ["node", "src/server.js"]
+# Run openclaw gateway directly per official Railway docs
+# (https://docs.openclaw.ai/install/railway). The gateway multiplexes
+# Control UI (/openclaw), WebSocket, MCP, and HTTP APIs on a single
+# port — no Express wrapper needed. The buggy /setup wizard (wrapper)
+# is intentionally bypassed; onboarding happens via `openclaw onboard`
+# in `railway shell` or via the native Control UI at /openclaw.
+CMD ["/bin/sh", "-c", "openclaw gateway run --port ${PORT:-8080} --bind auto --token \"$OPENCLAW_GATEWAY_TOKEN\""]
