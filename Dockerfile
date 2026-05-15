@@ -33,10 +33,20 @@ RUN set -eux; \
     sed -i -E 's/"openclaw"[[:space:]]*:[[:space:]]*"workspace:[^"]+"/"openclaw": "*"/g' "$f"; \
   done
 
-RUN pnpm install --no-frozen-lockfile
-RUN pnpm build
+# Bypass pnpm's minimumReleaseAge quarantine for OpenClaw's own packages.
+# OpenClaw upstream sets `minimumReleaseAge: 2880` (48h) in pnpm-workspace.yaml
+# as a supply-chain hardening measure — pnpm refuses to install any package
+# published less than 48 hours ago, unless it's in `minimumReleaseAgeExclude`.
+# Every OpenClaw point release ships new internal packages (@openclaw/fs-safe,
+# tokenjuice, etc.); when one of those is younger than 48h and not yet in the
+# exclude list, every downstream build fails with ERR_PNPM_NO_MATURE_MATCHING_VERSION.
+# OpenClaw's own `deadcode:dependencies` package.json script uses this exact
+# flag for the same reason. Safe in a containerized build — we're not
+# defending against typo-squatting in a tree we control.
+RUN pnpm --config.minimum-release-age=0 install --no-frozen-lockfile
+RUN pnpm --config.minimum-release-age=0 build
 ENV OPENCLAW_PREFER_PNPM=1
-RUN pnpm ui:install && pnpm ui:build
+RUN pnpm --config.minimum-release-age=0 ui:install && pnpm --config.minimum-release-age=0 ui:build
 
 
 # Runtime image
