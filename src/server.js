@@ -297,6 +297,89 @@ function requireSetupAuth(req, res, next) {
 
 const app = express();
 app.disable("x-powered-by");
+
+// ─────────────────────────────────────────────────────────────────────────
+// Telegram webhook reverse proxy
+//
+// MUST be registered BEFORE express.json(), because express.json consumes
+// req.body for any application/json POST — and we want the raw bytes so
+// we can pipe them through to OpenClaw's internal webhook listener with
+// zero modification. OpenClaw validates the X-Telegram-Bot-Api-Secret-Token
+// header and the JSON body itself before returning 200 to Telegram, so
+// the wrapper does NO auth on this route — it's just a byte pipe.
+//
+// Wiring:
+//   Telegram → POST https://<railway-public>/telegram-webhook  (this route)
+//        ↓ proxy
+//   http://127.0.0.1:${TELEGRAM_WEBHOOK_INTERNAL_PORT}/telegram-webhook
+//        ↓
+//   OpenClaw gateway (validates secret-token header + body → 200/4xx)
+//
+// To enable webhook mode (after this wrapper deploys), update
+// channels.telegram in OpenClaw's persisted config:
+//   {
+//     "enabled": true,
+//     "botToken": "...",
+//     "webhookUrl": "https://<railway-public>/telegram-webhook",
+//     "webhookSecret": "<random 24+ char string>",
+//     "webhookHost": "127.0.0.1",
+//     "webhookPort": 8787
+//   }
+// then restart the gateway. OpenClaw will setWebhook(...) against
+// Telegram on startup and stop polling.
+//
+// To roll back: delete webhookUrl from the config. OpenClaw auto-
+// deletes the webhook on polling-mode startup (per docs).
+//
+// Per docs.openclaw.ai/channels/telegram, the local listener defaults
+// to 127.0.0.1:8787 and the canonical solution for single-port cloud
+// hosts (Railway, Fly, Render) is "put a reverse proxy in front of
+// the local port" — exactly what this route does.
+// ─────────────────────────────────────────────────────────────────────────
+const TELEGRAM_WEBHOOK_INTERNAL_PORT = Number(
+  process.env.TELEGRAM_WEBHOOK_INTERNAL_PORT || 8787,
+);
+app.post(
+  "/telegram-webhook",
+  express.raw({ type: "*/*", limit: "2mb" }),
+  async (req, res) => {
+    try {
+      const upstream = await fetch(
+        `http://127.0.0.1:${TELEGRAM_WEBHOOK_INTERNAL_PORT}/telegram-webhook`,
+        {
+          method: "POST",
+          headers: {
+            "content-type":
+              req.headers["content-type"] || "application/json",
+            // Pass the Telegram secret-token header through verbatim;
+            // OpenClaw uses safeEqualSecret() against it.
+            "x-telegram-bot-api-secret-token":
+              req.headers["x-telegram-bot-api-secret-token"] || "",
+          },
+          body: req.body,
+          // Don't wait forever — Telegram retries on timeout. 15s gives
+          // OpenClaw room to do its agent loop without Telegram giving
+          // up on us prematurely.
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      const body = Buffer.from(await upstream.arrayBuffer());
+      res
+        .status(upstream.status)
+        .type(upstream.headers.get("content-type") || "application/json")
+        .send(body);
+    } catch (err) {
+      // 502 tells Telegram "we're temporarily broken"; it'll retry.
+      // Logged so we can diagnose connectivity issues to the gateway.
+      console.error(
+        "[telegram-webhook] proxy error:",
+        err instanceof Error ? err.message : String(err),
+      );
+      res.status(502).type("text/plain").send("upstream error");
+    }
+  },
+);
+
 app.use(express.json({ limit: "1mb" }));
 
 // Minimal health endpoint for Railway.
